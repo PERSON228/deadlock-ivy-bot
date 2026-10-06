@@ -7,7 +7,7 @@ import pandas as pd
 import aiohttp
 from aiohttp import web
 
-# Фикс для работы без графического экрана
+# Графический бэкенд для headless-серверов
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -37,7 +37,9 @@ async def fetch_player_matches(account_id: int, limit: int = 100):
             return await resp.json()
 
 def extract_stat(obj: dict, keys: list, default=0):
-    """Точное извлечение значения по списку ключей API без нечеткого поиска."""
+    """Точный поиск метрики по списку вероятных ключей в объекте."""
+    if not isinstance(obj, dict):
+        return float(default)
     for key in keys:
         if key in obj and obj[key] is not None:
             try:
@@ -47,15 +49,15 @@ def extract_stat(obj: dict, keys: list, default=0):
     return float(default)
 
 def calculate_player_features(matches_data: list, target_hero_id: int = 20):
-    ivy_matches = [m for m in matches_data if m.get("hero_id") == target_hero_id]
+    ivy_matches = [m for m in matches_data if isinstance(m, dict) and m.get("hero_id") == target_hero_id]
     
     if not ivy_matches:
         return None
 
-    # Логируем ключи первого матча в консоль Render для точной проверки структуры API
+    # Вывод структуры первого матча в логи Render для проверки полей API
     sample_match = ivy_matches[0]
     stats_container = sample_match.get("player_stats") if isinstance(sample_match.get("player_stats"), dict) else sample_match
-    logging.info(f"Deadlock API Match Keys: {list(stats_container.keys())}")
+    logging.info(f"API match keys: {list(stats_container.keys())}")
 
     net_worths, total_dmgs, weapon_dmgs = [], [], []
     heals, obj_dmgs, kills, assists, deaths = [], [], [], [], []
@@ -63,27 +65,21 @@ def calculate_player_features(matches_data: list, target_hero_id: int = 20):
     for m in ivy_matches:
         st = m.get("player_stats") if isinstance(m.get("player_stats"), dict) else m
 
-        # Урон по игрокам
         td = extract_stat(st, ["player_damage", "hero_damage", "damage_dealt_to_players", "damage_dealt", "damage"])
         total_dmgs.append(td)
 
-        # Фарм / Души
         nw = extract_stat(st, ["net_worth", "souls", "total_souls", "gold"])
         net_worths.append(nw)
 
-        # Урон оружием
         wd = extract_stat(st, ["weapon_damage", "bullet_damage", "gun_damage"])
         weapon_dmgs.append(wd)
 
-        # Лечение
         hl = extract_stat(st, ["healing", "heal_amount", "heals", "total_healing"])
         heals.append(hl)
 
-        # Урон по объектам
         od = extract_stat(st, ["objective_damage", "structure_damage", "tower_damage"])
         obj_dmgs.append(od)
 
-        # KDA
         kills.append(extract_stat(st, ["kills", "num_kills"]))
         assists.append(extract_stat(st, ["assists", "num_assists"]))
         deaths.append(extract_stat(st, ["deaths", "num_deaths"]))
@@ -125,8 +121,6 @@ def generate_style_chart(user_stats: dict, reference_df: pd.DataFrame) -> io.Byt
     x_coords = pca.fit_transform(scaled_data).flatten()
 
     ref_x = x_coords[:-1]
-    
-    # Ограничение координат в пределах видимой сетки
     user_x = np.clip(x_coords[-1], -2.5, 2.5)
 
     ref_y = reference_df['impact_z'].values
@@ -167,4 +161,71 @@ ref_data = {
     'obj_ratio': np.random.uniform(0.1, 0.6, 100),
     'assist_ratio': np.random.uniform(0.2, 0.7, 100),
     'kda': np.random.normal(2.5, 0.8, 100),
-    '
+    'impact_z': np.random.normal(0, 1, 100)
+}
+reference_df = pd.DataFrame(ref_data)
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "👋 Привет! Отправь мне свой Steam ID32 (например: 291654238), чтобы получить 2D-карту твоего стиля игры на Ivy."
+    )
+
+@dp.message(F.text)
+async def process_text_message(message: types.Message):
+    if message.text.startswith('/'):
+        return
+
+    cleaned_text = message.text.strip()
+
+    if not cleaned_text.isdigit():
+        await message.answer("⚠️ Пожалуйста, отправьте только числовой Steam ID32 (например: 291654238).")
+        return
+
+    account_id = int(cleaned_text)
+    await message.answer("🔍 Запрашиваю данные с сервера Deadlock API...")
+
+    matches = await fetch_player_matches(account_id)
+
+    if not matches:
+        await message.answer("❌ Не удалось найти данные по этому Steam ID или сервер недоступен.")
+        return
+
+    stats = calculate_player_features(matches, target_hero_id=20)
+
+    if not stats:
+        await message.answer("⚠️ В последних матчах не найдено сыгранных игр на Ivy.")
+        return
+
+    await message.answer("🎨 Генерирую карту стиля...")
+
+    img_buf = generate_style_chart(stats, reference_df)
+
+    caption = (
+        f"📊 Анализ стиля на Ivy ({stats['games_played']} матчей)\n\n"
+        f"• KDA: {stats['kda']:.2f}\n"
+        f"• Средний фарм: {int(stats['avg_net_worth'])} душ\n"
+        f"• Средний урон: {int(stats['avg_dmg'])}"
+    )
+
+    photo = BufferedInputFile(img_buf.read(), filename="ivy_style.png")
+    await message.answer_photo(photo=photo, caption=caption)
+
+async def handle_ping(request):
+    return web.Response(text="Bot status: OK")
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
