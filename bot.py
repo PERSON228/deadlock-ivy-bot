@@ -36,15 +36,39 @@ async def fetch_player_matches(account_id: int, limit: int = 100):
                 return None
             return await resp.json()
 
-def get_stat_value(match_obj: dict, *keys, default=0):
-    """Универсальное извлечение метрики с проверкой верхнего уровня и вложенных структур."""
-    for key in keys:
-        if key in match_obj and match_obj[key] is not None:
-            return match_obj[key]
-        if "player_stats" in match_obj and isinstance(match_obj["player_stats"], dict):
-            if key in match_obj["player_stats"] and match_obj["player_stats"][key] is not None:
-                return match_obj["player_stats"][key]
-    return default
+def get_stat_value(match_obj: dict, keys_preference: list, keywords_fallback: list, default=0):
+    """Универсальный парсер метрик: поиск по приоритетным названиям и подстрокам."""
+    if not isinstance(match_obj, dict):
+        return default
+
+    containers = [match_obj]
+    for sub in ["player_stats", "stats", "player", "hero_stats"]:
+        if sub in match_obj and isinstance(match_obj[sub], dict):
+            containers.append(match_obj[sub])
+
+    # 1. Точная проверка по предпочтительным названиям ключей
+    for c in containers:
+        for k in keys_preference:
+            if k in c and c[k] is not None:
+                try:
+                    return float(c[k])
+                except (ValueError, TypeError):
+                    pass
+
+    # 2. Поиск по частичному совпадению ключевого слова в названии поля
+    for c in containers:
+        for key_name, val in c.items():
+            if val is None:
+                continue
+            key_lower = str(key_name).lower()
+            for kw in keywords_fallback:
+                if kw.lower() in key_lower:
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        pass
+
+    return float(default)
 
 def calculate_player_features(matches_data: list, target_hero_id: int = 20):
     ivy_matches = [m for m in matches_data if m.get("hero_id") == target_hero_id]
@@ -56,15 +80,61 @@ def calculate_player_features(matches_data: list, target_hero_id: int = 20):
     heals, obj_dmgs, kills, assists, deaths = [], [], [], [], []
 
     for m in ivy_matches:
-        net_worths.append(get_stat_value(m, "net_worth", "networth", "souls", "total_souls", "gold"))
-        total_dmg = get_stat_value(m, "player_damage", "hero_damage", "total_damage", "damage")
-        total_dmgs.append(total_dmg)
-        weapon_dmgs.append(get_stat_value(m, "weapon_damage"))
-        heals.append(get_stat_value(m, "heal_amount", "healing", "heals"))
-        obj_dmgs.append(get_stat_value(m, "objective_damage", "structure_damage", "tower_damage"))
-        kills.append(get_stat_value(m, "kills"))
-        assists.append(get_stat_value(m, "assists"))
-        deaths.append(get_stat_value(m, "deaths"))
+        nw = get_stat_value(
+            m,
+            keys_preference=["net_worth", "networth", "souls", "total_souls", "gold"],
+            keywords_fallback=["worth", "soul", "gold"]
+        )
+        net_worths.append(nw)
+
+        td = get_stat_value(
+            m,
+            keys_preference=["player_damage", "hero_damage", "damage_dealt", "damage_to_players", "damage"],
+            keywords_fallback=["damage", "dmg"]
+        )
+        total_dmgs.append(td)
+
+        wd = get_stat_value(
+            m,
+            keys_preference=["weapon_damage", "bullet_damage", "gun_damage"],
+            keywords_fallback=["weapon", "bullet", "gun"]
+        )
+        weapon_dmgs.append(wd)
+
+        hl = get_stat_value(
+            m,
+            keys_preference=["heal_amount", "healing", "heals", "total_healing"],
+            keywords_fallback=["heal"]
+        )
+        heals.append(hl)
+
+        od = get_stat_value(
+            m,
+            keys_preference=["objective_damage", "structure_damage", "tower_damage", "boss_damage"],
+            keywords_fallback=["obj", "struct", "tower"]
+        )
+        obj_dmgs.append(od)
+
+        k = get_stat_value(
+            m,
+            keys_preference=["kills", "player_kills", "num_kills"],
+            keywords_fallback=["kill"]
+        )
+        kills.append(k)
+
+        a = get_stat_value(
+            m,
+            keys_preference=["assists", "player_assists", "num_assists"],
+            keywords_fallback=["assist"]
+        )
+        assists.append(a)
+
+        d = get_stat_value(
+            m,
+            keys_preference=["deaths", "player_deaths", "num_deaths"],
+            keywords_fallback=["death"]
+        )
+        deaths.append(d)
 
     avg_total_dmg = float(np.mean(total_dmgs)) if total_dmgs else 0.0
     avg_net_worth = float(np.mean(net_worths)) if net_worths else 0.0
