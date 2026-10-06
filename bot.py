@@ -137,9 +137,18 @@ async def cmd_start(message: types.Message):
         "чтобы получить 2D-карту твоего стиля игры на **Ivy**."
     )
 
-@dp.message(F.text.digit())
-async def process_steam_id(message: types.Message):
-    account_id = int(message.text)
+@dp.message(F.text)
+async def process_text_message(message: types.Message):
+    if message.text.startswith('/'):
+        return
+
+    cleaned_text = message.text.strip()
+
+    if not cleaned_text.isdigit():
+        await message.answer("⚠️ Пожалуйста, отправьте только числовой Steam ID32 (например: `291654238`).")
+        return
+
+    account_id = int(cleaned_text)
     await message.answer("🔍 Запрашиваю данные с сервера Deadlock API...")
 
     matches = await fetch_player_matches(account_id)
@@ -168,14 +177,12 @@ async def process_steam_id(message: types.Message):
     photo = BufferedInputFile(img_buf.read(), filename="ivy_style.png")
     await message.answer_photo(photo=photo, caption=caption, parse_mode="Markdown")
 
-# Обязательная функция веб-ответа для Render
 async def handle_ping(request):
     return web.Response(text="Bot status: OK")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
     
-    # Открываем порт для Render Web Service
     app = web.Application()
     app.router.add_get('/', handle_ping)
     runner = web.AppRunner(app)
@@ -184,7 +191,6 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    # Запускаем бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
