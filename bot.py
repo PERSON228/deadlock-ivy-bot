@@ -5,8 +5,9 @@ import logging
 import numpy as np
 import pandas as pd
 import aiohttp
+from aiohttp import web
 
-# Обязательно для облачных серверов без экрана
+# Фикс для работы без графического экрана
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -18,7 +19,6 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile
 
-# Берём токен из настроек Render (или используем ваш текущий)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8642003762:AAE4MRVSE_Fj2gefeMLl0NXMjsjtYi1iS9Q")
 
 bot = Bot(token=BOT_TOKEN)
@@ -168,8 +168,23 @@ async def process_steam_id(message: types.Message):
     photo = BufferedInputFile(img_buf.read(), filename="ivy_style.png")
     await message.answer_photo(photo=photo, caption=caption, parse_mode="Markdown")
 
+# Заглушка для Render Web Service Health Check
+async def handle_ping(request):
+    return web.Response(text="Bot status: OK")
+
 async def main():
     logging.basicConfig(level=logging.INFO)
+    
+    # Запуск фонового веб-сервера для удовлетворения проверок Render
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    # Запуск Telegram-бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
