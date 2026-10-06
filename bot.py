@@ -26,7 +26,7 @@ dp = Dispatcher()
 
 DEADLOCK_API_BASE = "https://api.deadlock-api.com/v1"
 
-async def fetch_player_matches(account_id: int, limit: int = 20):
+async def fetch_player_matches(account_id: int, limit: int = 100):
     url = f"{DEADLOCK_API_BASE}/players/{account_id}/match-history"
     params = {"limit": limit}
     
@@ -35,6 +35,16 @@ async def fetch_player_matches(account_id: int, limit: int = 20):
             if resp.status != 200:
                 return None
             return await resp.json()
+
+def get_stat_value(match_obj: dict, *keys, default=0):
+    """Универсальное извлечение метрики с проверкой верхнего уровня и вложенных структур."""
+    for key in keys:
+        if key in match_obj and match_obj[key] is not None:
+            return match_obj[key]
+        if "player_stats" in match_obj and isinstance(match_obj["player_stats"], dict):
+            if key in match_obj["player_stats"] and match_obj["player_stats"][key] is not None:
+                return match_obj["player_stats"][key]
+    return default
 
 def calculate_player_features(matches_data: list, target_hero_id: int = 20):
     ivy_matches = [m for m in matches_data if m.get("hero_id") == target_hero_id]
@@ -46,28 +56,31 @@ def calculate_player_features(matches_data: list, target_hero_id: int = 20):
     heals, obj_dmgs, kills, assists, deaths = [], [], [], [], []
 
     for m in ivy_matches:
-        stats = m.get("player_stats", {})
-        net_worths.append(stats.get("net_worth", 0))
-        total_dmg = stats.get("player_damage", 0)
+        net_worths.append(get_stat_value(m, "net_worth", "networth", "souls", "total_souls", "gold"))
+        total_dmg = get_stat_value(m, "player_damage", "hero_damage", "total_damage", "damage")
         total_dmgs.append(total_dmg)
-        weapon_dmgs.append(stats.get("weapon_damage", 0))
-        heals.append(stats.get("heal_amount", 0))
-        obj_dmgs.append(stats.get("objective_damage", 0))
-        kills.append(stats.get("kills", 0))
-        assists.append(stats.get("assists", 0))
-        deaths.append(stats.get("deaths", 1))
+        weapon_dmgs.append(get_stat_value(m, "weapon_damage"))
+        heals.append(get_stat_value(m, "heal_amount", "healing", "heals"))
+        obj_dmgs.append(get_stat_value(m, "objective_damage", "structure_damage", "tower_damage"))
+        kills.append(get_stat_value(m, "kills"))
+        assists.append(get_stat_value(m, "assists"))
+        deaths.append(get_stat_value(m, "deaths"))
 
-    avg_total_dmg = np.mean(total_dmgs) or 1
-    avg_net_worth = np.mean(net_worths) or 1
-    avg_kills = np.mean(kills)
-    avg_assists = np.mean(assists)
+    avg_total_dmg = float(np.mean(total_dmgs)) if total_dmgs else 0.0
+    avg_net_worth = float(np.mean(net_worths)) if net_worths else 0.0
+    avg_kills = float(np.mean(kills)) if kills else 0.0
+    avg_assists = float(np.mean(assists)) if assists else 0.0
+    avg_deaths = float(np.mean(deaths)) if deaths else 0.0
 
-    weapon_ratio = np.mean(weapon_dmgs) / avg_total_dmg
-    heal_ratio = np.mean(heals) / avg_net_worth
-    obj_ratio = np.mean(obj_dmgs) / (avg_total_dmg + 1)
-    assist_ratio = avg_assists / (avg_kills + avg_assists + 1)
+    denom_dmg = avg_total_dmg if avg_total_dmg > 0 else 1.0
+    denom_nw = avg_net_worth if avg_net_worth > 0 else 1.0
 
-    kda = (avg_kills + avg_assists) / (np.mean(deaths) or 1)
+    weapon_ratio = (float(np.mean(weapon_dmgs)) if weapon_dmgs else 0.0) / denom_dmg
+    heal_ratio = (float(np.mean(heals)) if heals else 0.0) / denom_nw
+    obj_ratio = (float(np.mean(obj_dmgs)) if obj_dmgs else 0.0) / (denom_dmg + 1.0)
+    assist_ratio = avg_assists / (avg_kills + avg_assists + 1.0)
+
+    kda = (avg_kills + avg_assists) / (avg_deaths if avg_deaths > 0 else 1.0)
 
     return {
         "games_played": len(ivy_matches),
