@@ -1,6 +1,5 @@
-aiogram
-aiohttp
-pandas
+aiogram>=3.4
+aiohttp>=3.9
 numpy
 scikit-learn
 matplotlib
