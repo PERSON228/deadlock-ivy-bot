@@ -7,7 +7,6 @@ import pandas as pd
 import aiohttp
 from aiohttp import web
 
-# Графический бэкенд для headless-серверов
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -37,52 +36,59 @@ async def fetch_player_matches(account_id: int, limit: int = 100):
             return await resp.json()
 
 def extract_stat(obj: dict, keys: list, default=0):
-    """Точный поиск метрики по списку вероятных ключей в объекте."""
+    """Поиск значения по списку ключей во внешнем объекте и во вложенных структурах."""
     if not isinstance(obj, dict):
         return float(default)
-    for key in keys:
-        if key in obj and obj[key] is not None:
-            try:
-                return float(obj[key])
-            except (ValueError, TypeError):
-                pass
+    
+    containers = [obj]
+    for sub in ["player_stats", "stats", "player"]:
+        if sub in obj and isinstance(obj[sub], dict):
+            containers.append(obj[sub])
+
+    for c in containers:
+        for key in keys:
+            if key in c and c[key] is not None:
+                try:
+                    return float(c[key])
+                except (ValueError, TypeError):
+                    pass
     return float(default)
 
 def calculate_player_features(matches_data: list, target_hero_id: int = 20):
     ivy_matches = [m for m in matches_data if isinstance(m, dict) and m.get("hero_id") == target_hero_id]
     
     if not ivy_matches:
-        return None
+        return None, []
 
-    # Вывод структуры первого матча в логи Render для проверки полей API
     sample_match = ivy_matches[0]
     stats_container = sample_match.get("player_stats") if isinstance(sample_match.get("player_stats"), dict) else sample_match
-    logging.info(f"API match keys: {list(stats_container.keys())}")
+    match_keys = list(stats_container.keys()) if isinstance(stats_container, dict) else []
 
     net_worths, total_dmgs, weapon_dmgs = [], [], []
     heals, obj_dmgs, kills, assists, deaths = [], [], [], [], []
 
     for m in ivy_matches:
-        st = m.get("player_stats") if isinstance(m.get("player_stats"), dict) else m
-
-        td = extract_stat(st, ["player_damage", "hero_damage", "damage_dealt_to_players", "damage_dealt", "damage"])
+        td = extract_stat(m, [
+            "player_damage", "hero_damage", "damage_dealt_to_players", 
+            "player_damage_dealt", "damage_dealt", "total_damage", "damage", "hero_dmg"
+        ])
         total_dmgs.append(td)
 
-        nw = extract_stat(st, ["net_worth", "souls", "total_souls", "gold"])
+        nw = extract_stat(m, ["net_worth", "networth", "souls", "total_souls", "gold"])
         net_worths.append(nw)
 
-        wd = extract_stat(st, ["weapon_damage", "bullet_damage", "gun_damage"])
+        wd = extract_stat(m, ["weapon_damage", "bullet_damage", "gun_damage", "weapon_dmg"])
         weapon_dmgs.append(wd)
 
-        hl = extract_stat(st, ["healing", "heal_amount", "heals", "total_healing"])
+        hl = extract_stat(m, ["healing", "heal_amount", "heals", "total_healing", "player_healing"])
         heals.append(hl)
 
-        od = extract_stat(st, ["objective_damage", "structure_damage", "tower_damage"])
+        od = extract_stat(m, ["objective_damage", "structure_damage", "tower_damage", "boss_damage"])
         obj_dmgs.append(od)
 
-        kills.append(extract_stat(st, ["kills", "num_kills"]))
-        assists.append(extract_stat(st, ["assists", "num_assists"]))
-        deaths.append(extract_stat(st, ["deaths", "num_deaths"]))
+        kills.append(extract_stat(m, ["player_kills", "kills", "num_kills", "kill_count"]))
+        assists.append(extract_stat(m, ["player_assists", "assists", "num_assists", "assist_count"]))
+        deaths.append(extract_stat(m, ["player_deaths", "deaths", "num_deaths", "death_count"]))
 
     avg_total_dmg = float(np.mean(total_dmgs)) if total_dmgs else 0.0
     avg_net_worth = float(np.mean(net_worths)) if net_worths else 0.0
@@ -100,13 +106,14 @@ def calculate_player_features(matches_data: list, target_hero_id: int = 20):
 
     kda = (avg_kills + avg_assists) / (avg_deaths if avg_deaths > 0 else 1.0)
 
-    return {
+    res = {
         "games_played": len(ivy_matches),
         "style_vector": [weapon_ratio, heal_ratio, obj_ratio, assist_ratio],
         "kda": kda,
         "avg_net_worth": avg_net_worth,
         "avg_dmg": avg_total_dmg
     }
+    return res, match_keys
 
 def generate_style_chart(user_stats: dict, reference_df: pd.DataFrame) -> io.BytesIO:
     all_style_vectors = np.vstack([
@@ -191,7 +198,7 @@ async def process_text_message(message: types.Message):
         await message.answer("❌ Не удалось найти данные по этому Steam ID или сервер недоступен.")
         return
 
-    stats = calculate_player_features(matches, target_hero_id=20)
+    stats, debug_keys = calculate_player_features(matches, target_hero_id=20)
 
     if not stats:
         await message.answer("⚠️ В последних матчах не найдено сыгранных игр на Ivy.")
@@ -205,7 +212,8 @@ async def process_text_message(message: types.Message):
         f"📊 Анализ стиля на Ivy ({stats['games_played']} матчей)\n\n"
         f"• KDA: {stats['kda']:.2f}\n"
         f"• Средний фарм: {int(stats['avg_net_worth'])} душ\n"
-        f"• Средний урон: {int(stats['avg_dmg'])}"
+        f"• Средний урон: {int(stats['avg_dmg'])}\n\n"
+        f"🔑 Поля API: {', '.join(debug_keys[:12])}"
     )
 
     photo = BufferedInputFile(img_buf.read(), filename="ivy_style.png")
