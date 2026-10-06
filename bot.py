@@ -36,38 +36,14 @@ async def fetch_player_matches(account_id: int, limit: int = 100):
                 return None
             return await resp.json()
 
-def get_stat_value(match_obj: dict, keys_preference: list, keywords_fallback: list, default=0):
-    """Универсальный парсер метрик: поиск по приоритетным названиям и подстрокам."""
-    if not isinstance(match_obj, dict):
-        return default
-
-    containers = [match_obj]
-    for sub in ["player_stats", "stats", "player", "hero_stats"]:
-        if sub in match_obj and isinstance(match_obj[sub], dict):
-            containers.append(match_obj[sub])
-
-    # 1. Точная проверка по предпочтительным названиям ключей
-    for c in containers:
-        for k in keys_preference:
-            if k in c and c[k] is not None:
-                try:
-                    return float(c[k])
-                except (ValueError, TypeError):
-                    pass
-
-    # 2. Поиск по частичному совпадению ключевого слова в названии поля
-    for c in containers:
-        for key_name, val in c.items():
-            if val is None:
-                continue
-            key_lower = str(key_name).lower()
-            for kw in keywords_fallback:
-                if kw.lower() in key_lower:
-                    try:
-                        return float(val)
-                    except (ValueError, TypeError):
-                        pass
-
+def extract_stat(obj: dict, keys: list, default=0):
+    """Точное извлечение значения по списку ключей API без нечеткого поиска."""
+    for key in keys:
+        if key in obj and obj[key] is not None:
+            try:
+                return float(obj[key])
+            except (ValueError, TypeError):
+                pass
     return float(default)
 
 def calculate_player_features(matches_data: list, target_hero_id: int = 20):
@@ -76,65 +52,41 @@ def calculate_player_features(matches_data: list, target_hero_id: int = 20):
     if not ivy_matches:
         return None
 
+    # Логируем ключи первого матча в консоль Render для точной проверки структуры API
+    sample_match = ivy_matches[0]
+    stats_container = sample_match.get("player_stats") if isinstance(sample_match.get("player_stats"), dict) else sample_match
+    logging.info(f"Deadlock API Match Keys: {list(stats_container.keys())}")
+
     net_worths, total_dmgs, weapon_dmgs = [], [], []
     heals, obj_dmgs, kills, assists, deaths = [], [], [], [], []
 
     for m in ivy_matches:
-        nw = get_stat_value(
-            m,
-            keys_preference=["net_worth", "networth", "souls", "total_souls", "gold"],
-            keywords_fallback=["worth", "soul", "gold"]
-        )
-        net_worths.append(nw)
+        st = m.get("player_stats") if isinstance(m.get("player_stats"), dict) else m
 
-        td = get_stat_value(
-            m,
-            keys_preference=["player_damage", "hero_damage", "damage_dealt", "damage_to_players", "damage"],
-            keywords_fallback=["damage", "dmg"]
-        )
+        # Урон по игрокам
+        td = extract_stat(st, ["player_damage", "hero_damage", "damage_dealt_to_players", "damage_dealt", "damage"])
         total_dmgs.append(td)
 
-        wd = get_stat_value(
-            m,
-            keys_preference=["weapon_damage", "bullet_damage", "gun_damage"],
-            keywords_fallback=["weapon", "bullet", "gun"]
-        )
+        # Фарм / Души
+        nw = extract_stat(st, ["net_worth", "souls", "total_souls", "gold"])
+        net_worths.append(nw)
+
+        # Урон оружием
+        wd = extract_stat(st, ["weapon_damage", "bullet_damage", "gun_damage"])
         weapon_dmgs.append(wd)
 
-        hl = get_stat_value(
-            m,
-            keys_preference=["heal_amount", "healing", "heals", "total_healing"],
-            keywords_fallback=["heal"]
-        )
+        # Лечение
+        hl = extract_stat(st, ["healing", "heal_amount", "heals", "total_healing"])
         heals.append(hl)
 
-        od = get_stat_value(
-            m,
-            keys_preference=["objective_damage", "structure_damage", "tower_damage", "boss_damage"],
-            keywords_fallback=["obj", "struct", "tower"]
-        )
+        # Урон по объектам
+        od = extract_stat(st, ["objective_damage", "structure_damage", "tower_damage"])
         obj_dmgs.append(od)
 
-        k = get_stat_value(
-            m,
-            keys_preference=["kills", "player_kills", "num_kills"],
-            keywords_fallback=["kill"]
-        )
-        kills.append(k)
-
-        a = get_stat_value(
-            m,
-            keys_preference=["assists", "player_assists", "num_assists"],
-            keywords_fallback=["assist"]
-        )
-        assists.append(a)
-
-        d = get_stat_value(
-            m,
-            keys_preference=["deaths", "player_deaths", "num_deaths"],
-            keywords_fallback=["death"]
-        )
-        deaths.append(d)
+        # KDA
+        kills.append(extract_stat(st, ["kills", "num_kills"]))
+        assists.append(extract_stat(st, ["assists", "num_assists"]))
+        deaths.append(extract_stat(st, ["deaths", "num_deaths"]))
 
     avg_total_dmg = float(np.mean(total_dmgs)) if total_dmgs else 0.0
     avg_net_worth = float(np.mean(net_worths)) if net_worths else 0.0
@@ -173,10 +125,13 @@ def generate_style_chart(user_stats: dict, reference_df: pd.DataFrame) -> io.Byt
     x_coords = pca.fit_transform(scaled_data).flatten()
 
     ref_x = x_coords[:-1]
-    user_x = x_coords[-1]
+    
+    # Ограничение координат в пределах видимой сетки
+    user_x = np.clip(x_coords[-1], -2.5, 2.5)
 
     ref_y = reference_df['impact_z'].values
-    user_y = (user_stats['kda'] - reference_df['kda'].mean()) / (reference_df['kda'].std() + 1e-6)
+    calc_y = (user_stats['kda'] - reference_df['kda'].mean()) / (reference_df['kda'].std() + 1e-6)
+    user_y = np.clip(calc_y, -2.5, 2.5)
 
     plt.figure(figsize=(10, 6), facecolor='#1e1e2e')
     ax = plt.axes()
@@ -187,6 +142,9 @@ def generate_style_chart(user_stats: dict, reference_df: pd.DataFrame) -> io.Byt
 
     plt.axhline(0, color='#585b70', linestyle='--', linewidth=1, alpha=0.5)
     plt.axvline(0, color='#585b70', linestyle='--', linewidth=1, alpha=0.5)
+
+    plt.xlim(-3, 3)
+    plt.ylim(-3, 3)
 
     plt.title('Ваш стиль игры на Ivy (Deadlock)', color='white', fontsize=14, pad=12)
     plt.xlabel('← Саппорт / Утилити       Стиль (Ось X)       Кэрри / Огнестрел →', color='#cdd6f4', fontsize=10)
@@ -209,72 +167,4 @@ ref_data = {
     'obj_ratio': np.random.uniform(0.1, 0.6, 100),
     'assist_ratio': np.random.uniform(0.2, 0.7, 100),
     'kda': np.random.normal(2.5, 0.8, 100),
-    'impact_z': np.random.normal(0, 1, 100)
-}
-reference_df = pd.DataFrame(ref_data)
-
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await message.answer(
-        "👋 Привет! Отправь мне свой **Steam ID32** (например: `291654238`), "
-        "чтобы получить 2D-карту твоего стиля игры на **Ivy**."
-    )
-
-@dp.message(F.text)
-async def process_text_message(message: types.Message):
-    if message.text.startswith('/'):
-        return
-
-    cleaned_text = message.text.strip()
-
-    if not cleaned_text.isdigit():
-        await message.answer("⚠️ Пожалуйста, отправьте только числовой Steam ID32 (например: `291654238`).")
-        return
-
-    account_id = int(cleaned_text)
-    await message.answer("🔍 Запрашиваю данные с сервера Deadlock API...")
-
-    matches = await fetch_player_matches(account_id)
-
-    if not matches:
-        await message.answer("❌ Не удалось найти данные по этому Steam ID или сервер недоступен.")
-        return
-
-    stats = calculate_player_features(matches, target_hero_id=20)
-
-    if not stats:
-        await message.answer("⚠️ В последних матчах не найдено сыгранных игр на **Ivy**.")
-        return
-
-    await message.answer("🎨 Генерирую карту стиля...")
-
-    img_buf = generate_style_chart(stats, reference_df)
-
-    caption = (
-        f"📊 **Анализ стиля на Ivy** ({stats['games_played']} матчей)\n\n"
-        f"• **KDA**: `{stats['kda']:.2f}`\n"
-        f"• **Средний фарм**: `{int(stats['avg_net_worth'])}` душ\n"
-        f"• **Средний урон**: `{int(stats['avg_dmg'])}`"
-    )
-
-    photo = BufferedInputFile(img_buf.read(), filename="ivy_style.png")
-    await message.answer_photo(photo=photo, caption=caption, parse_mode="Markdown")
-
-async def handle_ping(request):
-    return web.Response(text="Bot status: OK")
-
-async def main():
-    logging.basicConfig(level=logging.INFO)
-    
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    '
