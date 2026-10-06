@@ -168,14 +168,14 @@ async def process_steam_id(message: types.Message):
     photo = BufferedInputFile(img_buf.read(), filename="ivy_style.png")
     await message.answer_photo(photo=photo, caption=caption, parse_mode="Markdown")
 
-# Заглушка для Render Web Service Health Check
+# Обязательная функция веб-ответа для Render
 async def handle_ping(request):
     return web.Response(text="Bot status: OK")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
     
-    # Запуск фонового веб-сервера для удовлетворения проверок Render
+    # Открываем порт для Render Web Service
     app = web.Application()
     app.router.add_get('/', handle_ping)
     runner = web.AppRunner(app)
@@ -184,7 +184,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    # Запуск Telegram-бота
+    # Запускаем бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
